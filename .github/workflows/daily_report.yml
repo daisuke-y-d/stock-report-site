@@ -4,7 +4,7 @@ on:
   schedule:
     # UTC 22:00 = 日本時間(JST) 翌7:00
     # (GitHub Actionsの無料枠では、混雑状況により数分〜十数分遅れることがあります)
-    - cron: "0 22 * * *"
+    - cron: "0 23 * * *"
   workflow_dispatch: {}
     # ↑ Actionsの画面から手動で「Run workflow」を押してテスト実行できるようにする設定
 
