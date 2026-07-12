@@ -1,0 +1,5 @@
+requests
+deep-translator
+yfinance
+pandas
+numpy
