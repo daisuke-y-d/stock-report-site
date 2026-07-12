@@ -3,3 +3,5 @@ deep-translator
 yfinance
 pandas
 numpy
+mplfinance
+matplotlib

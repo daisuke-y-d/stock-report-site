@@ -284,13 +284,15 @@ def main():
     if INCLUDE_TECHNICAL_ANALYSIS:
         print("日経225のテクニカル指標をスキャンしています...")
         try:
-            technical_signals = technical_analysis.run_scan()
+            technical_signals, technical_charts = technical_analysis.run_scan()
             md_content += "\n\n---\n\n" + technical_analysis.build_technical_markdown(
                 technical_signals, report_date
             )
             html_content = html_content.replace(
                 "</body></html>",
-                "<hr>" + technical_analysis.build_technical_html(technical_signals, report_date)
+                "<hr>" + technical_analysis.build_technical_html(
+                    technical_signals, report_date, technical_charts
+                )
                 + "</body></html>",
             )
         except Exception as e:
