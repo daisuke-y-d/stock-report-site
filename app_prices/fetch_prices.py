@@ -1,143 +1,37 @@
-"""
-株価アプリ用：Yahoo!ファイナンス(yfinance)から株価・決算日・指標を集めて JSON にします。
-GitHub Actions で毎営業日に自動実行します（家のPCはYahoo!に止められることがあるため）。
-出力: app_prices/prices.json
-"""
 import datetime as dt
-import json
+import math
 import os
-import sys
-import time
+import tempfile
+import pandas as pd
+import fetch_prices as fp
 
-# 監視する銘柄コード（アプリの銘柄と同じにしてください。増やすときはここに追加）
-CODES = ["8035", "6758", "7203", "9984", "6861", "8306", "9983", "4063", "6098", "4502",
-         "7974", "8001", "6857", "285A", "9831", "4704", "2326"]
-INDICES = {"nikkei": "^N225", "sp500": "^GSPC", "usdjpy": "JPY=X", "us10y": "^TNX", "vix": "^VIX"}
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prices.json")
-JST = dt.timezone(dt.timedelta(hours=9))
+idx = pd.to_datetime(["2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13"])
+df = pd.DataFrame({"Open": [10, 11, float("nan"), 13], "High": [12, 12, 14, 15], "Low": [9, 10, 12, 12],
+                   "Close": [11, 12, 13, 14], "Volume": [100, 200, 300, float("nan")]}, index=idx)
+days = ["2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13"]
+a = fp.to_arrays(df, days)
+assert a["c"] == [None, 11.0, 12.0, None, 14.0], a                 # 欠損日・データの無い日はNone
+assert a["v"][1] == 100 and a["v"][4] == 0 and a["o"][0] is None
+assert fp.valid_days(a) == 3
 
+cal = {"Earnings Date": [dt.date(2026, 10, 1), dt.date(2026, 12, 5), dt.date(2026, 11, 20)]}
+assert fp.pick_earnings(cal, "2026-11-13") == "2026-11-20"
+assert fp.pick_earnings({}, "2026-11-13") is None and fp.pick_earnings(None, "2026-11-13") is None
+m = fp.build_meta({"trailingPE": 21.5, "priceToBook": 2.2, "returnOnEquity": 0.123, "trailingAnnualDividendYield": float("nan")}, cal, "2026-11-13")
+assert m["per"] == 21.5 and math.isclose(m["roe"], 12.3) and m["dy"] is None and m["earnings"] == "2026-11-20"
+v = fp.index_value(pd.DataFrame({"Close": [100.0, 110.0]}))
+assert v["value"] == 110.0 and math.isclose(v["change"], 10.0)
 
-def num(x):
-    """数値ならfloat、NaNや空はNone"""
-    try:
-        v = float(x)
-        return v if v == v and abs(v) != float("inf") else None
-    except (TypeError, ValueError):
-        return None
-
-
-def to_candles(df):
-    """DataFrame(Open/High/Low/Close/Volume, 日付index) → ローソク足のリスト（欠損行は除く）"""
-    out = {}
-    for idx, row in df.iterrows():
-        o, h, l, c = (num(row.get(k)) for k in ("Open", "High", "Low", "Close"))
-        if None in (o, h, l, c):
-            continue
-        day = idx.strftime("%Y-%m-%d")
-        out[day] = {"time": day, "open": o, "high": h, "low": l, "close": c, "volume": int(num(row.get("Volume")) or 0)}
-    return [out[k] for k in sorted(out)]
-
-
-def pick_earnings(cal, today):
-    """calendar から、今日以降でいちばん近い決算日(YYYY-MM-DD)を返す"""
-    dates = []
-    if isinstance(cal, dict):
-        dates = cal.get("Earnings Date") or []
-    if not isinstance(dates, (list, tuple)):
-        dates = [dates]
-    ok = []
-    for d in dates:
-        try:
-            s = d.strftime("%Y-%m-%d")
-        except AttributeError:
-            s = str(d)[:10]
-        if s >= today:
-            ok.append(s)
-    return min(ok) if ok else None
-
-
-def build_stock(df, info, cal, today):
-    info = info or {}
-    roe, dy = num(info.get("returnOnEquity")), num(info.get("trailingAnnualDividendYield"))
-    return {
-        "candles": to_candles(df),
-        "earnings": pick_earnings(cal, today),
-        "per": num(info.get("trailingPE")),
-        "pbr": num(info.get("priceToBook")),
-        "roe": roe * 100 if roe is not None else None,
-        "dy": dy * 100 if dy is not None else None,
-    }
-
-
-def index_value(df):
-    c = [num(x) for x in df["Close"].tolist() if num(x) is not None]
-    if not c:
-        return None
-    return {"value": c[-1], "change": ((c[-1] - c[-2]) / c[-2] * 100) if len(c) >= 2 and c[-2] else 0.0}
-
-
-def main():
-    import yfinance as yf
-
-    today = dt.datetime.now(JST).strftime("%Y-%m-%d")
-    syms = [c + ".T" for c in CODES]
-    data = yf.download(syms + list(INDICES.values()), period="1y", interval="1d", group_by="ticker",
-                       auto_adjust=False, threads=False, progress=False)
-
-    def frame(sym):
-        try:
-            df = data[sym].dropna(how="all")
-            if len(df):
-                return df
-        except Exception:
-            pass
-        time.sleep(1)
-        return yf.Ticker(sym).history(period="1y", interval="1d", auto_adjust=False)
-
-    stocks = {}
-    for code in CODES:
-        sym = code + ".T"
-        try:
-            df = frame(sym)
-            t = yf.Ticker(sym)
-            try:
-                info = t.info
-            except Exception as e:
-                print("info失敗", sym, e)
-                info = {}
-            try:
-                cal = t.calendar
-            except Exception as e:
-                print("calendar失敗", sym, e)
-                cal = {}
-            s = build_stock(df, info, cal, today)
-            if len(s["candles"]) >= 80:
-                stocks[code] = s
-                print("OK ", sym, len(s["candles"]), "本 決算:", s["earnings"])
-            else:
-                print("少なすぎ", sym, len(s["candles"]))
-        except Exception as e:
-            print("失敗", sym, e)
-        time.sleep(1)  # 相手に負担をかけない
-
-    indices = {}
-    for key, sym in INDICES.items():
-        try:
-            v = index_value(frame(sym))
-            if v:
-                indices[key] = v
-        except Exception as e:
-            print("指数失敗", sym, e)
-
-    if len(stocks) < len(CODES) / 2:
-        print("取得できた銘柄が少なすぎるため、前回のファイルを残して終了します")
-        sys.exit(1)
-
-    out = {"generatedAt": dt.datetime.now(JST).isoformat(timespec="seconds"), "stocks": stocks, "indices": indices}
-    with open(OUT, "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
-    print("書き出し:", OUT, len(stocks), "銘柄")
-
-
-if __name__ == "__main__":
-    main()
+# 日経225のCSV読み込み（BOM付き・.T付き・監視銘柄の追加と並び順）
+with tempfile.TemporaryDirectory() as d:
+    p = os.path.join(d, "n.csv")
+    with open(p, "w", encoding="utf-8-sig") as f:
+        f.write("code,name,sector\n4151,協和キリン,医薬品\n7203.T,トヨタ自動車,自動車\n285A,キオクシア,電気機器\n")
+    uni, order = fp.load_universe(p)
+    assert uni["7203"] == ("トヨタ自動車", "自動車") and uni["4151"][0] == "協和キリン"
+    assert uni["9831"][0] == "ヤマダホールディングス"          # CSVに無い監視銘柄も入る
+    assert order[: len(fp.WATCH)] == fp.WATCH and "4151" in order  # 監視銘柄が先頭
+    assert len(order) == len(set(order))
+uni2, order2 = fp.load_universe("/no/such/file.csv")
+assert set(order2) == set(fp.WATCH)                            # CSVが無くても動く
+print("PY OK")
