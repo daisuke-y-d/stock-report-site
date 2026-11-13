@@ -1,0 +1,33 @@
+name: stock-app-prices
+
+on:
+  schedule:
+    - cron: "40 7 * * 1-5"   # 平日 16:40（日本時間）= 取引終了のあと
+  workflow_dispatch:           # 手動実行ボタン
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stock-app-prices
+  cancel-in-progress: false
+
+jobs:
+  prices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install yfinance pandas
+      - run: python app_prices/fetch_prices.py
+      - name: Commit
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add app_prices/prices.json
+          git diff --cached --quiet && exit 0
+          git commit -m "update prices"
+          git pull --rebase
+          git push
